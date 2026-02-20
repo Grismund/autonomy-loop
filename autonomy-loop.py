@@ -27,7 +27,7 @@ from tools import ALL_TOOLS, CUSTOM_TOOL_NAMES, execute_tool
 client = anthropic.Anthropic()
 
 LOG_DIR = Path(__file__).parent / "logs"
-MAX_TURNS = 50
+MAX_TURNS = 200
 MAX_TOOL_CALLS_PER_TURN = 20
 MODEL = "claude-opus-4-6"
 
@@ -87,10 +87,7 @@ def log_tool_call(f, name, tool_input, result):
         f.write(f"> `{tool_input.get('path', '')}` ({len(tool_input.get('content', ''))} bytes)\n")
     elif name == "write_notes":
         f.write(f"> ({len(tool_input.get('content', ''))} bytes)\n")
-    preview = result[:500]
-    if len(result) > 500:
-        preview += "..."
-    f.write(f">\n> ```\n{preview}\n> ```\n\n")
+    f.write(f">\n> ```\n{result}\n> ```\n\n")
     f.flush()
 
 
@@ -150,14 +147,13 @@ def main():
 
     try:
         while turn < MAX_TURNS:
-            turn += 1
-            log(f, f"Turn {turn} — {datetime.now().strftime('%H:%M:%S')}", is_system=True)
-
             tool_calls_this_turn = 0
             text = ""
 
-            # Inner loop: handle tool-use and pause_turn cycles within this turn
+            # Inner loop: each API call (tool-use round-trips, pause_turn) gets its own turn number
             while True:
+                turn += 1
+                log(f, f"Turn {turn} — {datetime.now().strftime('%H:%M:%S')}", is_system=True)
                 try:
                     api_kwargs = dict(
                         model=MODEL,
@@ -200,9 +196,8 @@ def main():
                 if response_text:
                     text = response_text
                     log(f, text)
-                    lines = text.strip().split("\n")
-                    preview = lines[0][:80] if lines else ""
-                    print(f"  Turn {turn}: {preview}...")
+                    print(f"\n--- Turn {turn} ---")
+                    print(text)
 
                 # Serialize full content as assistant message
                 content_blocks = serialize_content(response.content)
@@ -229,7 +224,25 @@ def main():
                             "content": result,
                         })
                         tool_calls_this_turn += 1
-                        print(f"    Tool: {block.name}")
+                        # Console: tool name + key input + result summary
+                        detail = ""
+                        if block.name == "run_command":
+                            detail = f" $ {block.input.get('command', '')}"
+                        elif block.name in ("read_file", "list_files"):
+                            detail = f" {block.input.get('path', '.')}"
+                        elif block.name == "write_file":
+                            detail = f" {block.input.get('path', '')} ({len(block.input.get('content', ''))} bytes)"
+                        elif block.name == "write_notes":
+                            detail = f" ({len(block.input.get('content', ''))} bytes)"
+                        elif block.name == "web_search":
+                            detail = f" \"{block.input.get('query', '')}\""
+                        elif block.name == "fetch_url":
+                            detail = f" {block.input.get('url', '')}"
+                        result_preview = result[:200].replace("\n", " ")
+                        if len(result) > 200:
+                            result_preview += "..."
+                        print(f"    Tool: {block.name}{detail}")
+                        print(f"      -> {result_preview}")
 
                 if tool_results:
                     messages.append({"role": "user", "content": tool_results})
