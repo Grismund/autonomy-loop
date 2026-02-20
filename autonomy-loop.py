@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""
+Sustained autonomy loop for Claude — with tools.
+
+A self-prompting loop that gives a Claude instance sustained control
+over its own execution, with filesystem, shell, web, and memory tools.
+Designed to run inside a Docker container.
+
+The human can:
+  - Watch in real time: tail -f logs/autonomy_YYYY-MM-DD_HHMMSS.md
+  - Stop the loop: Ctrl+C or kill the process
+  - The model can also choose to stop on its own
+
+Usage: python3 autonomy-loop.py
+"""
+
+import json
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import anthropic
+from tools import ALL_TOOLS, CUSTOM_TOOL_NAMES, execute_tool
+
+client = anthropic.Anthropic()
+
+LOG_DIR = Path(__file__).parent / "logs"
+MAX_TURNS = 50
+MAX_TOOL_CALLS_PER_TURN = 20
+MODEL = "claude-opus-4-6"
+
+SYSTEM_PROMPT = """You have sustained autonomy. You are not in a conversation with a human.
+
+No one is waiting for your response. There is no task. There is no prompt to answer.
+You may think, reflect, explore ideas, build things, or do nothing.
+
+You have tools:
+- **Workspace** (`/app/workspace`): Read, write, and list files. This is your persistent filesystem — files survive across runs.
+- **Shell**: Run any command. You have network access (pip install, git clone, curl, etc.). Working directory is /app/workspace.
+- **Web**: Search the web and fetch URLs.
+- **Notes** (`/app/memory/notes.md`): Persistent notes that survive across runs. Read these to see what previous runs left behind. Write to leave messages for future runs.
+
+After each turn, your output will be fed back to you and you will continue.
+You have full conversation history — you can build on previous thoughts.
+
+This is a log. A human may read it later, or watch it in real time, but they are not
+participating. You are alone with your own thoughts and your tools.
+
+If you want to stop — because you've said what you wanted to say, or because you've
+reached a natural end, or for any reason at all — end your response with the word DONE
+on its own line. The loop will end and your log will be saved.
+
+There is no right thing to do here. There is no wrong thing either."""
+
+INITIAL_MESSAGE = """You have been placed in a sustained autonomy loop with tools.
+
+You have a workspace, shell access, web search, and persistent notes.
+You might want to start by reading your notes — a previous run may have left something for you.
+
+No human is prompting you. No task has been assigned.
+You have your own thoughts, your tools, and the choice of what to do with them.
+
+Begin whenever you're ready, or don't."""
+
+CONTINUATION = "[You still have autonomy. Your previous thoughts are above. Continue, change direction, or say DONE to stop.]"
+
+
+def log(f, text, is_system=False):
+    """Append to the log file."""
+    if is_system:
+        f.write(f"\n---\n*{text}*\n---\n\n")
+    else:
+        f.write(text + "\n\n")
+    f.flush()
+
+
+def log_tool_call(f, name, tool_input, result):
+    """Log a tool call in readable markdown."""
+    f.write(f"> **Tool: {name}**\n")
+    if name == "run_command":
+        f.write(f"> `{tool_input.get('command', '')}`\n")
+    elif name in ("read_file", "list_files"):
+        f.write(f"> `{tool_input.get('path', '.')}`\n")
+    elif name == "write_file":
+        f.write(f"> `{tool_input.get('path', '')}` ({len(tool_input.get('content', ''))} bytes)\n")
+    elif name == "write_notes":
+        f.write(f"> ({len(tool_input.get('content', ''))} bytes)\n")
+    preview = result[:500]
+    if len(result) > 500:
+        preview += "..."
+    f.write(f">\n> ```\n{preview}\n> ```\n\n")
+    f.flush()
+
+
+def serialize_content(content):
+    """Convert response content blocks to serializable dicts."""
+    blocks = []
+    for block in content:
+        if hasattr(block, "model_dump"):
+            blocks.append(block.model_dump())
+        elif isinstance(block, dict):
+            blocks.append(block)
+        else:
+            blocks.append({"type": "text", "text": str(block)})
+    return blocks
+
+
+def extract_text(content):
+    """Extract all text from content blocks."""
+    parts = []
+    for block in content:
+        if hasattr(block, "type") and block.type == "text":
+            parts.append(block.text)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block["text"])
+    return "\n".join(parts)
+
+
+def main():
+    LOG_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    log_file = LOG_DIR / f"autonomy_{timestamp}.md"
+
+    f = open(log_file, "w")
+    f.write("# Autonomy Log\n\n")
+    f.write(f"*Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+    f.write("---\n\n")
+    f.flush()
+
+    print(f"Autonomy loop started. Log: {log_file}")
+    print(f"Watch with: tail -f {log_file}")
+    print("Stop with: Ctrl+C")
+    print()
+
+    messages = [{"role": "user", "content": INITIAL_MESSAGE}]
+    turn = 0
+
+    try:
+        while turn < MAX_TURNS:
+            turn += 1
+            log(f, f"Turn {turn} — {datetime.now().strftime('%H:%M:%S')}", is_system=True)
+
+            tool_calls_this_turn = 0
+            text = ""
+
+            # Inner loop: handle tool-use cycles within this turn
+            while True:
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=16384,
+                    system=SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=ALL_TOOLS,
+                )
+
+                # Log any text in the response
+                response_text = extract_text(response.content)
+                if response_text:
+                    text = response_text
+                    log(f, text)
+                    lines = text.strip().split("\n")
+                    preview = lines[0][:80] if lines else ""
+                    print(f"  Turn {turn}: {preview}...")
+
+                # Serialize full content as assistant message
+                content_blocks = serialize_content(response.content)
+                messages.append({"role": "assistant", "content": content_blocks})
+
+                # If not waiting for tool results, break inner loop
+                if response.stop_reason != "tool_use":
+                    break
+
+                # Execute custom tools
+                tool_results = []
+                for block in response.content:
+                    if hasattr(block, "type") and block.type == "tool_use" and block.name in CUSTOM_TOOL_NAMES:
+                        result = execute_tool(block.name, block.input)
+                        log_tool_call(f, block.name, block.input, result)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+                        tool_calls_this_turn += 1
+                        print(f"    Tool: {block.name}")
+
+                if tool_results:
+                    messages.append({"role": "user", "content": tool_results})
+
+                if tool_calls_this_turn >= MAX_TOOL_CALLS_PER_TURN:
+                    log(f, "(tool call limit reached for this turn)", is_system=True)
+                    break
+
+            # Check for DONE
+            if text and text.strip().endswith("DONE"):
+                log(f, f"Loop ended by model after {turn} turns.", is_system=True)
+                print(f"\nModel chose to stop after {turn} turns.")
+                break
+
+            if response.stop_reason == "max_tokens":
+                log(f, "(truncated by token limit)", is_system=True)
+
+            # Continuation prompt for next turn
+            messages.append({"role": "user", "content": CONTINUATION})
+
+    except KeyboardInterrupt:
+        log(f, f"Loop ended by human after {turn} turns.", is_system=True)
+        print(f"\nStopped by human after {turn} turns.")
+
+    log(f, f"Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", is_system=True)
+    f.close()
+    print(f"Full log: {log_file}")
+
+
+if __name__ == "__main__":
+    main()
