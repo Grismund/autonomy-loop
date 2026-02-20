@@ -17,6 +17,7 @@ Usage: python3 autonomy-loop.py
 import json
 import os
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -93,6 +94,16 @@ def log_tool_call(f, name, tool_input, result):
     f.flush()
 
 
+def log_api_response(f, response, container_id):
+    """Log API response metadata for debugging."""
+    block_types = [getattr(b, "type", "unknown") for b in response.content]
+    meta = f"stop_reason={response.stop_reason}, blocks={block_types}"
+    if container_id:
+        meta += f", container={container_id[:20]}..."
+    f.write(f"<!-- {meta} -->\n")
+    f.flush()
+
+
 def serialize_content(content):
     """Convert response content blocks to serializable dicts."""
     blocks = []
@@ -134,6 +145,7 @@ def main():
     print()
 
     messages = [{"role": "user", "content": INITIAL_MESSAGE}]
+    container_id = None
     turn = 0
 
     try:
@@ -144,15 +156,44 @@ def main():
             tool_calls_this_turn = 0
             text = ""
 
-            # Inner loop: handle tool-use cycles within this turn
+            # Inner loop: handle tool-use and pause_turn cycles within this turn
             while True:
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=16384,
-                    system=SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=ALL_TOOLS,
-                )
+                try:
+                    api_kwargs = dict(
+                        model=MODEL,
+                        max_tokens=16384,
+                        system=SYSTEM_PROMPT,
+                        messages=messages,
+                        tools=ALL_TOOLS,
+                    )
+                    if container_id:
+                        api_kwargs["container"] = container_id
+
+                    response = client.messages.create(**api_kwargs)
+
+                except anthropic.APIError as e:
+                    error_msg = f"API error: {e}"
+                    log(f, error_msg, is_system=True)
+                    print(f"  API error: {e}")
+                    # If container went stale, clear it and retry once
+                    if container_id and "container" in str(e).lower():
+                        log(f, "Clearing stale container_id and retrying", is_system=True)
+                        container_id = None
+                        api_kwargs.pop("container", None)
+                        try:
+                            response = client.messages.create(**api_kwargs)
+                        except anthropic.APIError as e2:
+                            log(f, f"Retry also failed: {e2}", is_system=True)
+                            raise
+                    else:
+                        raise
+
+                # Capture container_id if the API returns one
+                if hasattr(response, "container") and response.container:
+                    container_id = response.container.id
+
+                # Log response metadata
+                log_api_response(f, response, container_id)
 
                 # Log any text in the response
                 response_text = extract_text(response.content)
@@ -166,6 +207,11 @@ def main():
                 # Serialize full content as assistant message
                 content_blocks = serialize_content(response.content)
                 messages.append({"role": "assistant", "content": content_blocks})
+
+                # pause_turn: API paused a long-running server operation, continue
+                if response.stop_reason == "pause_turn":
+                    print(f"    (pause_turn — continuing)")
+                    continue
 
                 # If not waiting for tool results, break inner loop
                 if response.stop_reason != "tool_use":
@@ -207,6 +253,11 @@ def main():
     except KeyboardInterrupt:
         log(f, f"Loop ended by human after {turn} turns.", is_system=True)
         print(f"\nStopped by human after {turn} turns.")
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        log(f, f"Fatal error:\n```\n{error_detail}\n```", is_system=True)
+        print(f"\nFatal error: {e}")
+        print(error_detail)
 
     log(f, f"Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", is_system=True)
     f.close()
