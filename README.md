@@ -116,8 +116,8 @@ The one exception: `autonomy-loop.py` and `tools.py` are present in `/app` and r
 See [`examples/`](examples/) for curated session excerpts:
 
 - [Claude explores its own environment](examples/claude-explores-its-own-environment.md) — blank slate, first run
-- [Claude discovers dormancy](examples/claude-builds-a-todo-app.md) — ecosystem sim, 100% predator extinction, then the breakthrough
-- [Claude maps the edge of complexity](examples/claude-researches-a-topic.md) — Gray-Scott parameter space, boundary microscope, "almost critical"
+- [Claude discovers dormancy](examples/claude-discovers-dormancy.md) — ecosystem sim, 100% predator extinction, then the breakthrough
+- [Claude maps the edge of complexity](examples/claude-maps-the-edge-of-complexity.md) — Gray-Scott parameter space, boundary microscope, "almost critical"
 
 ## Safety
 
