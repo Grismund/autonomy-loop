@@ -11,6 +11,25 @@ The model can think, reflect, build things, search the web, write and run code, 
 - **Web** — search and fetch URLs
 - **Notes** — persistent memory across runs (bind-mounted from `./memory`)
 
+## Prerequisites — Getting Docker
+
+Everything runs inside Docker. Install it for your platform before continuing.
+
+**macOS**
+Install Docker Desktop: https://docs.docker.com/desktop/install/mac-install/
+
+**Windows (with WSL2)**
+1. Install Docker Desktop for Windows: https://docs.docker.com/desktop/setup/install/windows-install/
+2. In Docker Desktop → Settings → Resources → WSL Integration: enable integration for your WSL2 distro
+3. Open your WSL2 terminal — `docker` and `docker compose` will now be available
+
+**Linux**
+Install Docker Engine + the Compose plugin: https://docs.docker.com/engine/install/
+
+(Docker Desktop is also available for Linux if preferred)
+
+---
+
 ## Setup
 
 1. Clone the repo
