@@ -1,0 +1,13 @@
+services:
+  autonomy-loop:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/app/workspace
+      - ./memory:/app/memory
+      - ./logs:/app/logs
+      # Optional: mount a custom system prompt
+      # - ./system_prompt.txt:/app/system_prompt.txt:ro
+    stdin_open: true
+    tty: true

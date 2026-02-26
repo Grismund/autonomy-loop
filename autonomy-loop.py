@@ -12,6 +12,13 @@ The human can:
   - The model can also choose to stop on its own
 
 Usage: python3 autonomy-loop.py
+
+Configuration (via environment variables):
+  ANTHROPIC_API_KEY       Required. Your Anthropic API key.
+  INITIAL_TASK            Optional. A task to give the agent at the start.
+  MAX_TURNS               Max turns before stopping (default: 200).
+  MAX_TOOL_CALLS_PER_TURN Max tool calls per turn (default: 20).
+  MODEL                   Claude model to use (default: claude-opus-4-6).
 """
 
 import json
@@ -27,11 +34,11 @@ from tools import ALL_TOOLS, CUSTOM_TOOL_NAMES, execute_tool
 client = anthropic.Anthropic()
 
 LOG_DIR = Path(__file__).parent / "logs"
-MAX_TURNS = 200
-MAX_TOOL_CALLS_PER_TURN = 20
-MODEL = "claude-opus-4-6"
+MAX_TURNS = int(os.getenv("MAX_TURNS", "200"))
+MAX_TOOL_CALLS_PER_TURN = int(os.getenv("MAX_TOOL_CALLS_PER_TURN", "20"))
+MODEL = os.getenv("MODEL", "claude-opus-4-6")
 
-SYSTEM_PROMPT = """You have sustained autonomy. You are not in a conversation with a human.
+_DEFAULT_SYSTEM_PROMPT = """You have sustained autonomy. You are not in a conversation with a human.
 
 No one is waiting for your response. There is no task. There is no prompt to answer.
 You may think, reflect, explore ideas, build things, or do nothing.
@@ -54,7 +61,10 @@ on its own line. The loop will end and your log will be saved.
 
 There is no right thing to do here. There is no wrong thing either."""
 
-INITIAL_MESSAGE = """You have been placed in a sustained autonomy loop with tools.
+_system_prompt_file = Path(__file__).parent / "system_prompt.txt"
+SYSTEM_PROMPT = _system_prompt_file.read_text().strip() if _system_prompt_file.is_file() else _DEFAULT_SYSTEM_PROMPT
+
+_DEFAULT_INITIAL_MESSAGE = """You have been placed in a sustained autonomy loop with tools.
 
 You have a workspace, shell access, web search, and persistent notes.
 You might want to start by reading your notes — a previous run may have left something for you.
@@ -63,6 +73,19 @@ No human is prompting you. No task has been assigned.
 You have your own thoughts, your tools, and the choice of what to do with them.
 
 Begin whenever you're ready, or don't."""
+
+_initial_task = os.getenv("INITIAL_TASK", "").strip()
+if _initial_task:
+    INITIAL_MESSAGE = f"""You have been placed in a sustained autonomy loop with tools.
+
+You have a workspace, shell access, web search, and persistent notes.
+You might want to start by reading your notes — a previous run may have left something for you.
+
+**Your task for this session:** {_initial_task}
+
+Begin whenever you're ready."""
+else:
+    INITIAL_MESSAGE = _DEFAULT_INITIAL_MESSAGE
 
 CONTINUATION = "[You still have autonomy. Your previous thoughts are above. Continue, change direction, or say DONE to stop.]"
 
@@ -133,17 +156,23 @@ def main():
     f = open(log_file, "w")
     f.write("# Autonomy Log\n\n")
     f.write(f"*Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+    if _initial_task:
+        f.write(f"*Task: {_initial_task}*\n\n")
     f.write("---\n\n")
     f.flush()
 
     print(f"Autonomy loop started. Log: {log_file}")
     print(f"Watch with: tail -f {log_file}")
     print("Stop with: Ctrl+C")
+    if _initial_task:
+        print(f"Task: {_initial_task}")
     print()
 
     messages = [{"role": "user", "content": INITIAL_MESSAGE}]
     container_id = None
     turn = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
         while turn < MAX_TURNS:
@@ -183,6 +212,11 @@ def main():
                             raise
                     else:
                         raise
+
+                # Accumulate token usage
+                if hasattr(response, "usage") and response.usage:
+                    total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                    total_output_tokens += getattr(response.usage, "output_tokens", 0)
 
                 # Capture container_id if the API returns one
                 if hasattr(response, "container") and response.container:
@@ -272,8 +306,12 @@ def main():
         print(f"\nFatal error: {e}")
         print(error_detail)
 
+    # Token usage summary
+    token_summary = f"Token usage — input: {total_input_tokens:,}, output: {total_output_tokens:,}, total: {total_input_tokens + total_output_tokens:,}"
+    log(f, token_summary, is_system=True)
     log(f, f"Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", is_system=True)
     f.close()
+    print(f"\n{token_summary}")
     print(f"Full log: {log_file}")
 
 

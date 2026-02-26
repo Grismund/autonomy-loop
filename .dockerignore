@@ -1,0 +1,33 @@
+# Human-facing documentation
+# Excluded to preserve tabula rasa — the agent shouldn't know it's being observed.
+README.md
+CONTRIBUTING.md
+*.md
+
+# Launch infrastructure — reveals host structure and volume mounts
+run.sh
+*.sh
+
+# Example outputs — prior runs become templates for future runs
+examples/
+
+# GitHub-specific metadata — signals OSS project being watched
+.github/
+
+# Config templates — reveals available configuration knobs
+.env.example
+system_prompt.txt.example
+
+# Git history
+.git/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Host state
+.env
+workspace/
+memory/
+logs/
