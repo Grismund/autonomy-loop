@@ -114,6 +114,19 @@ def log_tool_call(f, name, tool_input, result):
     f.flush()
 
 
+def log_server_tool_call(f, name, tool_input):
+    """Log a server-side tool invocation (input only; result is server-managed)."""
+    f.write(f"> **Tool: {name}** *(server-side)*\n")
+    if name == "web_search_20260209":
+        f.write(f"> Query: `{tool_input.get('query', '')}`\n")
+    elif name == "web_fetch_20260209":
+        f.write(f"> URL: `{tool_input.get('url', '')}`\n")
+    else:
+        f.write(f"> Input: `{json.dumps(tool_input)}`\n")
+    f.write("\n")
+    f.flush()
+
+
 def log_api_response(f, response, container_id):
     """Log API response metadata for debugging."""
     block_types = [getattr(b, "type", "unknown") for b in response.content]
@@ -225,6 +238,20 @@ def main():
                 # Log response metadata
                 log_api_response(f, response, container_id)
 
+                # Log server tool invocations (web_search, web_fetch, etc.)
+                for block in response.content:
+                    if not hasattr(block, "type") or block.type != "tool_use":
+                        continue
+                    if block.name in CUSTOM_TOOL_NAMES:
+                        continue
+                    log_server_tool_call(f, block.name, block.input)
+                    if block.name == "web_search_20260209":
+                        print(f"    Tool: {block.name} \"{block.input.get('query', '')}\"")
+                    elif block.name == "web_fetch_20260209":
+                        print(f"    Tool: {block.name} {block.input.get('url', '')}")
+                    else:
+                        print(f"    Tool: {block.name} {json.dumps(block.input)}")
+
                 # Log any text in the response
                 response_text = extract_text(response.content)
                 if response_text:
@@ -268,10 +295,6 @@ def main():
                             detail = f" {block.input.get('path', '')} ({len(block.input.get('content', ''))} bytes)"
                         elif block.name == "write_notes":
                             detail = f" ({len(block.input.get('content', ''))} bytes)"
-                        elif block.name == "web_search":
-                            detail = f" \"{block.input.get('query', '')}\""
-                        elif block.name == "fetch_url":
-                            detail = f" {block.input.get('url', '')}"
                         result_preview = result[:200].replace("\n", " ")
                         if len(result) > 200:
                             result_preview += "..."
